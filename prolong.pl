@@ -2,7 +2,6 @@
 % Left: human (W/S). Right: AI (alternates: simple, smart) every new ball.
 % ESC or close window to quit.
 
-% pointless change
 :- use_module(library(ffi)).
 :- use_module(library(random)).
 
