@@ -11,6 +11,8 @@ main :-
     use_foreign_module("./librlwrap.so", [
         'RL_InitWindow'([sint32,sint32,cstr], void),
         'RL_SetTargetFPS'([sint32], void),
+        'RL_ApplyTargetFPS'([], void),
+        'RL_GetFrameTimeUs'([], sint32),
         'RL_WindowShouldClose'([], sint32),
         'RL_IsKeyDown'([sint32], sint32),
         'RL_BeginDrawing'([], void),
@@ -24,29 +26,58 @@ main :-
     % Window
     W = 960, H = 540,
     ffi:'RL_InitWindow'(W, H, "Prolong"),
-    ffi:'RL_SetTargetFPS'(60),
+    % Render as fast as the cadence allows; the simulation has its own clock.
+    ffi:'RL_ApplyTargetFPS',
 
     % Initial state
     PW = 12, PH = 90, Ball = 8,
-    PSpeed = 420.0, BSpeed = 360.0, Dt is 1.0/60.0,
+    PSpeed = 420.0, BSpeed = 360.0,
+    % Physics runs on a fixed tick, stepped as many times per frame as real
+    % elapsed time calls for. Motion is then correct in wall-clock terms
+    % whatever the render rate does, and each tick is small enough that a fast
+    % ball cannot skip through a paddle.
+    Dt is 1.0/240.0,
     X0 is W/2, Y0 is H/2, Vx0 = BSpeed, Vy0 is 0.65*BSpeed,
     LPY0 is H/2, RPY0 is H/2, LS0 = 0, RS0 = 0,
     AI0 = simple,   % start with simple, will toggle on each new serve
     S0 = state(X0,Y0,Vx0,Vy0,LPY0,RPY0,LS0,RS0,AI0),
 
-    loop(W,H,PW,PH,Ball,PSpeed,Dt,S0),
+    loop(W,H,PW,PH,Ball,PSpeed,Dt,0.0,S0),
 
     ffi:'RL_CloseWindow'.
 
 % ---------------- Loop & input ----------------
 
-loop(W,H,PW,PH,Ball,PSpeed,Dt,S0) :-
+loop(W,H,PW,PH,Ball,PSpeed,Dt,Acc,S0) :-
     ffi:'RL_WindowShouldClose'(C),
     (  C =\= 0
     -> true
-    ;  step(W,H,PW,PH,Ball,PSpeed,Dt,S0,S1),
+    ;  frame_time(Ft),
+       Acc1 is Acc + Ft,
+       catch_up(W,H,PW,PH,Ball,PSpeed,Dt,Acc1,S0,Acc2,S1),
        draw(W,H,PW,PH,Ball,S1),
-       loop(W,H,PW,PH,Ball,PSpeed,Dt,S1)
+       loop(W,H,PW,PH,Ball,PSpeed,Dt,Acc2,S1)
+    ).
+
+% Real time since the previous frame, in seconds. Clamped so that a hitch
+% (window drag, a scheduler stall, the compositor blocking) costs at most a
+% quarter second of simulation rather than an unbounded burst of ticks.
+frame_time(Ft) :-
+    ffi:'RL_GetFrameTimeUs'(Us),
+    Raw is Us/1000000.0,
+    ( Raw < 0.0    -> Ft = 0.0
+    ; Raw > 0.25   -> Ft = 0.25
+    ;                 Ft = Raw
+    ).
+
+% Run whole physics ticks until less than one tick of real time is left over.
+% The remainder carries into the next frame, so no time is lost or invented.
+catch_up(W,H,PW,PH,Ball,PSpeed,Dt,Acc,S0,AccOut,SOut) :-
+    (  Acc >= Dt
+    -> step(W,H,PW,PH,Ball,PSpeed,Dt,S0,S1),
+       Acc1 is Acc - Dt,
+       catch_up(W,H,PW,PH,Ball,PSpeed,Dt,Acc1,S1,AccOut,SOut)
+    ;  AccOut = Acc, SOut = S0
     ).
 
 is_key_down(Key) :- ffi:'RL_IsKeyDown'(Key, R), R =\= 0.
